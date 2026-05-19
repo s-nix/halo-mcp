@@ -93,6 +93,7 @@ cp .env.example .env
 | `MCP_PORT` | No | HTTP port (default: `3000`) |
 | `MCP_AUTH_MODE` | No | `apikey` (default) or `oauth` — applies to HTTP transport only |
 | `MCP_API_KEY` | Cond. | Required when `MCP_AUTH_MODE=apikey` and using HTTP transport |
+| `MCP_AUTH_PASSPHRASE` | No | If set, the OAuth authorize page requires this passphrase before granting access |
 | `MCP_ISSUER_URL` | Cond. | Required when `MCP_AUTH_MODE=oauth` — your server's public HTTPS URL |
 
 ### Generating an API Key
@@ -136,6 +137,45 @@ npm run dev:http
 The server will listen on `http://<MCP_HOST>:<MCP_PORT>/mcp` (default `http://127.0.0.1:3000/mcp`).
 
 A health-check endpoint is available at `GET /health` (unauthenticated).
+
+### Running with pm2 (recommended for production)
+
+Since the server stores OAuth tokens in memory, restarting it invalidates all active sessions. Use [pm2](https://pm2.keymetrics.io/) to keep the server running persistently and restart it automatically on crashes or reboots.
+
+**Install pm2 globally:**
+
+```bash
+npm install -g pm2
+```
+
+**Start the server:**
+
+```bash
+pm2 start dist/index.js --name halo-mcp
+```
+
+**Useful pm2 commands:**
+
+```bash
+pm2 logs halo-mcp      # view logs
+pm2 restart halo-mcp   # restart the server
+pm2 stop halo-mcp      # stop the server
+pm2 delete halo-mcp    # remove from pm2
+```
+
+**Persist across reboots:**
+
+```bash
+pm2 startup            # generate startup script (follow the printed instructions)
+pm2 save               # save the current process list
+```
+
+On Windows, use [pm2-installer](https://github.com/jessety/pm2-installer) to run pm2 as a Windows Service:
+
+```powershell
+npm install -g pm2-installer
+pm2-installer install
+```
 
 ## Reverse Proxy with Caddy (HTTPS)
 

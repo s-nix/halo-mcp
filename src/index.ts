@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import { HaloClient } from "./halo-client.js";
 import { apiKeyAuth } from "./auth.js";
-import { HaloOAuthProvider } from "./oauth-provider.js";
+import { HaloOAuthProvider, pendingAuths, verifyPassphrase } from "./oauth-provider.js";
 import { registerTicketTools } from "./tools/tickets.js";
 import { registerClientTools } from "./tools/clients.js";
 import { registerUserTools } from "./tools/users.js";
@@ -66,6 +66,7 @@ async function startHttp() {
   const app = express();
   app.set("trust proxy", 1);
   app.use(express.json());
+  app.use(express.urlencoded({ extended: false }));
 
   // Health check (unauthenticated)
   app.get("/health", (_req, res) => {
@@ -85,6 +86,39 @@ async function startHttp() {
         scopesSupported: ["mcp:read", "mcp:write"],
       })
     );
+
+    // Passphrase confirmation endpoint (form POST from the authorize page)
+    app.post("/authorize-confirm", (req, res) => {
+      const { request_id, passphrase } = req.body;
+
+      if (!request_id || !passphrase) {
+        res.status(400).send("Missing required fields");
+        return;
+      }
+
+      const pending = pendingAuths.get(request_id);
+      if (!pending) {
+        res.status(400).send("Invalid or expired authorization request");
+        return;
+      }
+
+      if (Date.now() > pending.expiresAt) {
+        pendingAuths.delete(request_id);
+        res.status(400).send("Authorization request expired");
+        return;
+      }
+
+      if (!verifyPassphrase(passphrase)) {
+        // Re-render the form with an error (keep the same request_id)
+        res.setHeader("Content-Type", "text/html");
+        res.status(403).send(renderConfirmError(request_id));
+        return;
+      }
+
+      // Passphrase valid — issue the code and redirect
+      pendingAuths.delete(request_id);
+      oauthProvider.issueCodeAndRedirect(pending.clientId, pending, res);
+    });
   }
 
   // Map of session transports for stateful mode
@@ -155,6 +189,39 @@ async function main() {
   } else {
     await startStdio();
   }
+}
+
+function renderConfirmError(requestId: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Authorize — HaloPSA MCP</title>
+  <style>
+    body { font-family: system-ui, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; }
+    .card { background: #fff; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); max-width: 360px; width: 100%; }
+    h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+    .error { color: #e74c3c; margin-bottom: 1rem; }
+    label { display: block; font-size: 0.875rem; margin-bottom: 0.25rem; }
+    input[type="password"] { width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; box-sizing: border-box; }
+    button { margin-top: 1rem; width: 100%; padding: 0.6rem; background: #2563eb; color: #fff; border: none; border-radius: 4px; font-size: 1rem; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Authorize MCP Connection</h1>
+    <p class="error">Incorrect passphrase. Please try again.</p>
+    <form method="POST" action="/authorize-confirm">
+      <input type="hidden" name="request_id" value="${requestId}">
+      <label for="passphrase">Passphrase</label>
+      <input type="password" id="passphrase" name="passphrase" required autofocus>
+      <button type="submit">Authorize</button>
+    </form>
+  </div>
+</body>
+</html>`;
 }
 
 main().catch((error) => {

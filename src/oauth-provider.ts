@@ -1,4 +1,4 @@
-import { randomUUID, randomBytes, createHash } from "node:crypto";
+import { randomUUID, randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { Response } from "express";
 import {
   OAuthServerProvider,
@@ -35,6 +35,18 @@ const authCodes = new Map<string, AuthCode>();
 const accessTokens = new Map<string, StoredToken>();
 const refreshTokens = new Map<string, StoredToken>();
 
+// Pending authorization requests awaiting passphrase confirmation
+export interface PendingAuth {
+  clientId: string;
+  codeChallenge: string;
+  redirectUri: string;
+  scopes: string[];
+  state?: string;
+  expiresAt: number;
+}
+
+export const pendingAuths = new Map<string, PendingAuth>();
+
 // ─── Client Store ────────────────────────────────────────────────────────────
 
 class InMemoryClientsStore implements OAuthRegisteredClientsStore {
@@ -63,24 +75,55 @@ export class HaloOAuthProvider implements OAuthServerProvider {
   }
 
   /**
-   * The authorize endpoint. Since this is a machine-to-machine server,
-   * we auto-approve the request (no interactive login page needed).
-   * Claude.ai sends the user here then expects a redirect back with a code.
+   * The authorize endpoint. If MCP_AUTH_PASSPHRASE is set, renders an HTML
+   * form requiring the passphrase before issuing an authorization code.
+   * Otherwise, auto-approves (original behavior).
    */
   async authorize(
     client: OAuthClientInformationFull,
     params: AuthorizationParams,
     res: Response
   ): Promise<void> {
-    const code = randomBytes(32).toString("base64url");
+    const passphrase = process.env.MCP_AUTH_PASSPHRASE;
 
-    authCodes.set(code, {
-      code,
+    if (!passphrase) {
+      // No passphrase configured — auto-approve (legacy behavior)
+      this.issueCodeAndRedirect(client.client_id, params, res);
+      return;
+    }
+
+    // Store the pending authorization and show the login form
+    const requestId = randomUUID();
+    pendingAuths.set(requestId, {
       clientId: client.client_id,
       codeChallenge: params.codeChallenge,
       redirectUri: params.redirectUri,
       scopes: params.scopes ?? [],
+      state: params.state,
       expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
+    });
+
+    res.setHeader("Content-Type", "text/html");
+    res.send(renderLoginPage(requestId));
+  }
+
+  /**
+   * Issue an authorization code and redirect the user back to the client.
+   */
+  issueCodeAndRedirect(
+    clientId: string,
+    params: { codeChallenge: string; redirectUri: string; scopes?: string[]; state?: string },
+    res: Response
+  ): void {
+    const code = randomBytes(32).toString("base64url");
+
+    authCodes.set(code, {
+      code,
+      clientId,
+      codeChallenge: params.codeChallenge,
+      redirectUri: params.redirectUri,
+      scopes: params.scopes ?? [],
+      expiresAt: Date.now() + 10 * 60 * 1000,
     });
 
     const redirectUrl = new URL(params.redirectUri);
@@ -232,4 +275,53 @@ export class HaloOAuthProvider implements OAuthServerProvider {
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+// ─── Passphrase helpers ──────────────────────────────────────────────────────
+
+export function verifyPassphrase(input: string): boolean {
+  const expected = process.env.MCP_AUTH_PASSPHRASE ?? "";
+  const bufA = Buffer.from(input, "utf-8");
+  const bufB = Buffer.from(expected, "utf-8");
+  if (bufA.length !== bufB.length) {
+    timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return timingSafeEqual(bufA, bufB);
+}
+
+function renderLoginPage(requestId: string, error?: string): string {
+  const errorHtml = error
+    ? `<p style="color:#e74c3c;margin-bottom:1rem;">${error}</p>`
+    : "";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Authorize — HaloPSA MCP</title>
+  <style>
+    body { font-family: system-ui, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; }
+    .card { background: #fff; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); max-width: 360px; width: 100%; }
+    h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+    label { display: block; font-size: 0.875rem; margin-bottom: 0.25rem; }
+    input[type="password"] { width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; box-sizing: border-box; }
+    button { margin-top: 1rem; width: 100%; padding: 0.6rem; background: #2563eb; color: #fff; border: none; border-radius: 4px; font-size: 1rem; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Authorize MCP Connection</h1>
+    ${errorHtml}
+    <form method="POST" action="/authorize-confirm">
+      <input type="hidden" name="request_id" value="${requestId}">
+      <label for="passphrase">Passphrase</label>
+      <input type="password" id="passphrase" name="passphrase" required autofocus>
+      <button type="submit">Authorize</button>
+    </form>
+  </div>
+</body>
+</html>`;
 }
