@@ -16,7 +16,6 @@ import { registerAgentTools } from "./tools/agents.js";
 import { registerKBTools } from "./tools/kb.js";
 import { registerProjectTools } from "./tools/projects.js";
 import { registerInvoiceTools } from "./tools/invoices.js";
-import { registerTimeTools } from "./tools/time.js";
 import { registerSiteTools } from "./tools/sites.js";
 import { registerOpportunityTools } from "./tools/opportunities.js";
 
@@ -50,7 +49,6 @@ registerAgentTools(server, halo);
 registerKBTools(server, halo);
 registerProjectTools(server, halo);
 registerInvoiceTools(server, halo);
-registerTimeTools(server, halo);
 registerSiteTools(server, halo);
 registerOpportunityTools(server, halo);
 
