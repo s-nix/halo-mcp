@@ -64,6 +64,7 @@ async function startHttp() {
   const authMode = process.env.MCP_AUTH_MODE ?? "apikey"; // "apikey" or "oauth"
 
   const app = express();
+  app.set("trust proxy", 1);
   app.use(express.json());
 
   // Health check (unauthenticated)
